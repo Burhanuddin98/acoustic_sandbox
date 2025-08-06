@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 import io
-import queue
-import time
 from typing import Optional, Tuple, List
 
 import numpy as np
@@ -12,9 +10,15 @@ import matplotlib.pyplot as plt
 from scipy.signal import fftconvolve
 import soundfile as sf
 
+# -----------------------------------------------------------------------------
+# Page config
+# -----------------------------------------------------------------------------
 st.set_page_config(page_title="Acoustic Sandbox", layout="wide")
+plt.style.use("dark_background")
 
+# -----------------------------------------------------------------------------
 # Optional: librosa for spectrograms/resampling (fallbacks if missing)
+# -----------------------------------------------------------------------------
 try:
     import librosa
     import librosa.display
@@ -24,19 +28,9 @@ except Exception as e:
     HAVE_LIBROSA = False
     LIBROSA_ERR = e
 
-# Mic capture (WebRTC)
-WEBRTC_AVAILABLE = False
-try:
-    from streamlit_webrtc import webrtc_streamer, WebRtcMode
-    WEBRTC_AVAILABLE = True
-except Exception:
-    WEBRTC_AVAILABLE = False
-
-plt.style.use("dark_background")
-
-# =============================================================================
+# -----------------------------------------------------------------------------
 # CACHED/UTILITY FUNCTIONS
-# =============================================================================
+# -----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def load_audio(uploaded_file) -> Tuple[np.ndarray, int]:
     """Read file-like to mono float32 via soundfile."""
@@ -89,9 +83,9 @@ def resample_linear(y: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     y_new = np.interp(t_new, t_old, y).astype(np.float32)
     return y_new
 
-# =============================================================================
+# -----------------------------------------------------------------------------
 # SYNTHETIC IRs AND CONVOLUTION
-# =============================================================================
+# -----------------------------------------------------------------------------
 def _synth_ir(sr: int,
               rt60: float,
               predelay_ms: float = 0.0,
@@ -199,9 +193,9 @@ def plot_spectrogram(y: np.ndarray, sr: int, title: str, n_fft: int = 1024, hop:
     st.pyplot(fig, clear_figure=True)
     plt.close(fig)
 
-# =============================================================================
+# -----------------------------------------------------------------------------
 # SWEEP GENERATION & IR DECONVOLUTION
-# =============================================================================
+# -----------------------------------------------------------------------------
 def generate_log_sweep(sr: int, T: float, f_start: float = 20.0, f_end: float = 20000.0, fade_ms: float = 10.0) -> np.ndarray:
     """Log sine sweep with Hann in/out fades."""
     t = np.linspace(0, T, int(sr * T), endpoint=False)
@@ -229,11 +223,11 @@ def deconvolve_ir(recorded: np.ndarray, sweep: np.ndarray, sr: int, eps: float =
     pk = np.max(np.abs(h)) or 1.0
     return (h / pk).astype(np.float32)
 
-# =============================================================================
+# -----------------------------------------------------------------------------
 # IR RESOLUTION (preset/custom/measured)
-# =============================================================================
+# -----------------------------------------------------------------------------
 def get_effective_ir(sr: int, preset: str, custom_ir_file) -> np.ndarray:
-    """Resolve IR priority: measured override -> custom upload -> preset synth."""
+    """Priority: measured override -> custom upload -> preset synth."""
     if "override_ir_bytes" in st.session_state and st.session_state["override_ir_bytes"] is not None:
         return make_ir(sr, preset, custom_ir_bytes=st.session_state["override_ir_bytes"])
     else:
@@ -242,17 +236,17 @@ def get_effective_ir(sr: int, preset: str, custom_ir_file) -> np.ndarray:
             custom_ir_file.seek(0)
         return make_ir(sr, preset, custom_ir_bytes=custom_bytes)
 
-# =============================================================================
-# UI
-# =============================================================================
-st.set_page_config(page_title="Acoustic Sandbox (Rewritten)", layout="wide")
-st.title("🔊 Acoustic Sandbox — Equalisation & Impulse Resoponses")
-
+# -----------------------------------------------------------------------------
+# UI: Title & Librosa state
+# -----------------------------------------------------------------------------
+st.title("🔊 Acoustic Sandbox — Equalisation & Impulse Responses")
 if not HAVE_LIBROSA:
     with st.expander("Librosa not available (spectrogram falls back to waveform)"):
         st.exception(LIBROSA_ERR)
 
-# ---------------- Sidebar controls ----------------
+# -----------------------------------------------------------------------------
+# SIDEBAR: EQ / IR / GAIN / PREVIEW
+# -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("🎚️ 20-Band Graphic EQ")
     centers, labels = eq_centers_20()
@@ -269,7 +263,7 @@ with st.sidebar:
         [
             "Anechoic (dry)", "Vocal Booth", "Small Room", "Tiled Bathroom", "Plate Reverb",
             "Spring Reverb", "Large Hall", "Cathedral", "Car Cabin", "Underground Tunnel",
-            "Stadium", "Club (dense, bright)", "Damped Studio", "Forest / Outdoor", "Stairwell"
+            "Stadium", "Club (dense, bright)", "Damped Studio", "Forest / Outdoor", "Stairwell",
         ],
         index=2,
     )
@@ -285,7 +279,9 @@ with st.sidebar:
     st.header("⚡ Preview")
     preview_sec = st.slider("Preview length (s)", 1, 15, 5)
 
-# ---------------- Upload ----------------
+# -----------------------------------------------------------------------------
+# AUDIO UPLOAD & PREVIEW PROCESSING
+# -----------------------------------------------------------------------------
 uploaded = st.file_uploader("Upload audio (WAV/MP3/OGG)", type=["wav", "mp3", "ogg"])
 if not uploaded:
     st.info("Upload an audio file to begin.")
@@ -331,7 +327,9 @@ with col2:
     st.audio(proc_preview_buf, format="audio/wav")
     plot_spectrogram(y_proc_prev, sr, "Processed (Preview)")
 
-# ---------------- Full processing ----------------
+# -----------------------------------------------------------------------------
+# FULL PROCESSING
+# -----------------------------------------------------------------------------
 st.divider()
 if st.button("🚀 Process FULL file with current settings"):
     with st.spinner("Processing full file…"):
@@ -377,135 +375,96 @@ st.divider()
 st.download_button("⬇️ Download preview (processed)", data=proc_preview_buf,
                    file_name="processed_preview.wav", mime="audio/wav")
 
-# =============================================================================
-# MEASURE YOUR OWN ROOM IR (MIC) — BETA
-# =============================================================================
-st.header("🧪 Measure Room IR (Mic) — Beta")
-st.caption("Play a log sweep through your speakers and record with your mic. Disable echo cancellation / AGC / noise suppression if possible in your OS/browser.")
+# -----------------------------------------------------------------------------
+# MEASURE YOUR OWN ROOM IR (UPLOAD RECORDING)
+# -----------------------------------------------------------------------------
+st.header("🧪 Measure Room IR (Upload Recording)")
+st.caption(
+    "Play a log sweep through your speakers and record it with a mic (WAV, uncompressed). "
+    "Then upload the recording here to compute your room/hardware IR."
+)
 
-# Prepare ICE servers (STUN default, optional TURN from secrets)
-ice_servers = [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]
-try:
-    if "iceServers" in st.secrets:
-        # Expect a list like: [{"urls": "...", "username": "...", "credential": "..."}]
-        ice_servers.extend(st.secrets["iceServers"])
-except Exception:
-    pass
+with st.expander("Generate sweep ▶️  + Instructions"):
+    msr_sr = st.selectbox("Sample rate for sweep", [48000, 44100], index=0)
+    msr_T = st.slider("Sweep length (s)", 4, 20, 10)
+    msr_fstart = st.number_input("Start freq (Hz)", 10.0, 200.0, 20.0, step=1.0)
+    msr_fend = st.number_input("End freq (Hz)", 2000.0, 24000.0, 20000.0, step=100.0)
+    msr_tail = st.slider("Recommended extra tail to capture after sweep (s)", 1, 8, 3)
+    ir_keep_s = st.slider("IR length to keep after deconvolution (s)", 1, 8, 6)
 
-if not WEBRTC_AVAILABLE:
-    st.warning("Install `streamlit-webrtc` and `av` to enable mic capture:\n`pip install streamlit-webrtc av`")
-else:
-    with st.expander("Measure & use a custom room IR"):
-        msr_sr = st.selectbox("Sample rate for measurement", [48000, 44100], index=0)
-        msr_T = st.slider("Sweep length (s)", 4, 20, 10)
-        msr_fstart = st.number_input("Start freq (Hz)", 10.0, 200.0, 20.0, step=1.0)
-        msr_fend = st.number_input("End freq (Hz)", 2000.0, 24000.0, 20000.0, step=100.0)
-        msr_tail = st.slider("Extra tail to record after sweep (s)", 1, 8, 3)
-        ir_keep_s = st.slider("IR length to keep (s)", 1, 8, 6)
+    # Generate sweep & player + download
+    sweep = generate_log_sweep(msr_sr, msr_T, msr_fstart, msr_fend)
+    sweep_buf = to_wav_buffer(sweep, msr_sr)
 
-        # Generate sweep & player
-        sweep = generate_log_sweep(msr_sr, msr_T, msr_fstart, msr_fend)
-        sweep_buf = to_wav_buffer(sweep, msr_sr)
-        st.write("1) Set your volume. 2) Toggle **Start capture**. 3) Press ▶️ to play the sweep while capturing. 4) Click **Compute IR**.")
-        st.audio(sweep_buf, format="audio/wav")
+    st.markdown(
+        "**Instructions**\n"
+        "1) Set your speakers to a moderate level.  \n"
+        "2) Press play below **or** download the sweep and play it from a DAW/phone.  \n"
+        f"3) Record the sweep **plus at least {msr_tail} s** of tail on a mic/recorder (WAV, mono or stereo).  \n"
+        "4) Upload the recorded WAV in the next section and click **Compute IR**.\n"
+        "_Tip: disable OS echo cancellation / AGC / noise suppression if possible._"
+    )
+    st.audio(sweep_buf, format="audio/wav")
+    st.download_button("⬇️ Download sweep (WAV)", data=sweep_buf, file_name="log_sweep.wav", mime="audio/wav")
 
-        # Start/stop mic capture
-        capturing = st.toggle("🎙️ Start capture", value=False, help="Starts the browser microphone stream.")
+st.subheader("📥 Upload your recorded sweep response")
+rec_file = st.file_uploader("Recorded response (WAV recommended; uncompressed)", type=["wav"])
 
-        # WebRTC mic: SENDONLY means browser sends mic to the app
-        ctx = webrtc_streamer(
-            key="ir-measure",
-            mode=WebRtcMode.SENDONLY,
-            audio_receiver_size=1024,  # increase queue for buffering
-            rtc_configuration={"iceServers": ice_servers},
-            media_stream_constraints={
-                "audio": {
-                    "echoCancellation": False,
-                    "noiseSuppression": False,
-                    "autoGainControl": False,
-                },
-                "video": False,
-            },
-            desired_playing_state=capturing,  # bound to toggle
-        )
+compute_col1, compute_col2 = st.columns([1, 2])
+with compute_col1:
+    compute_ir = st.button("🧮 Compute IR from uploaded recording")
 
-        # Initialize buffers
-        if "rec_chunks" not in st.session_state:
-            st.session_state["rec_chunks"] = []
-            st.session_state["rec_sr"] = msr_sr
-            st.session_state["rec_samples"] = 0
+with compute_col2:
+    st.caption("Make sure the uploaded recording contains the full sweep **and** the decay tail.")
 
-        status_ph = st.empty()
+if compute_ir:
+    if rec_file is None:
+        st.error("Please upload the recorded sweep response (WAV) first.")
+    else:
+        # Load recording (mono downmix)
+        recorded, rec_sr = load_audio(rec_file)
 
-        # Pull frames while playing
-        if ctx and ctx.state.playing and ctx.audio_receiver:
-            try:
-                frames = ctx.audio_receiver.get_frames(timeout=0.2)
-            except queue.Empty:
-                frames = []
-            for f in frames:
-                arr = f.to_ndarray()  # (channels, samples) or (samples,)
-                if arr.ndim == 2:
-                    arr = arr.mean(axis=0)
-                arr = arr.astype(np.float32)
-                st.session_state["rec_chunks"].append(arr)
-                st.session_state["rec_samples"] += arr.shape[-1]
-                # Some environments provide f.sample_rate
-                sr_frame = getattr(f, "sample_rate", None)
-                if sr_frame:
-                    st.session_state["rec_sr"] = sr_frame
+        # Ensure sweep & recording have the same sample rate
+        if rec_sr != msr_sr:
+            # Resample the *sweep* to the recording's sr for accurate deconvolution
+            if HAVE_LIBROSA:
+                sweep_match = librosa.resample(sweep, orig_sr=msr_sr, target_sr=rec_sr)
+            else:
+                st.warning(f"Recording sr={rec_sr} ≠ sweep sr={msr_sr}. Using linear resampler for the sweep.")
+                sweep_match = resample_linear(sweep, msr_sr, rec_sr)
+            use_sr = rec_sr
+        else:
+            sweep_match = sweep
+            use_sr = msr_sr
 
-            dur = st.session_state["rec_samples"] / float(st.session_state["rec_sr"] or msr_sr)
-            status_ph.info(f"Capturing… {dur:.1f}s of audio buffered.")
+        # Sanity check: length
+        min_len = int((msr_T + msr_tail) * use_sr)
+        if len(recorded) < min_len:
+            st.warning("Recording is shorter than (sweep + recommended tail). Results may be noisy.")
 
-        colm1, colm2, colm3 = st.columns(3)
-        with colm1:
-            if st.button("🧹 Reset recording buffer"):
-                st.session_state["rec_chunks"] = []
-                st.session_state["rec_samples"] = 0
-                st.session_state.pop("measured_ir", None)
-                st.toast("Recording buffer cleared.", icon="🧹")
+        # Deconvolve and trim
+        with st.spinner("Deconvolving…"):
+            ir_est = deconvolve_ir(recorded.astype(np.float32), np.asarray(sweep_match, dtype=np.float32), use_sr)
+            ir_est = ir_est[: int(ir_keep_s * use_sr)]
+            st.session_state["measured_ir"] = ir_est.astype(np.float32)
+            st.session_state["measured_ir_sr"] = use_sr
 
-        with colm2:
-            st.caption(f"Tip: aim for ≥ {msr_T + msr_tail:.1f}s capture (sweep + tail).")
+if "measured_ir" in st.session_state:
+    st.success("Measured IR computed.")
+    ir_est = st.session_state["measured_ir"]
+    ir_sr = int(st.session_state.get("measured_ir_sr", 48000))
+    buf_ir = to_wav_buffer(ir_est, ir_sr)
 
-        with colm3:
-            if st.button("🧮 Compute IR from recording"):
-                if len(st.session_state["rec_chunks"]) == 0:
-                    st.error("No audio captured yet. Start capture, play the sweep, then try again.")
-                else:
-                    recorded = np.concatenate(st.session_state["rec_chunks"])
-                    rec_sr = st.session_state.get("rec_sr", msr_sr)
+    a, b = st.columns(2)
+    with a:
+        st.audio(buf_ir, format="audio/wav")
+        st.download_button("⬇️ Download measured IR (WAV)", data=buf_ir, file_name="measured_ir.wav", mime="audio/wav")
+    with b:
+        plot_spectrogram(ir_est, ir_sr, "Measured IR (spectrogram)")
 
-                    # Resample recorded to target measurement rate if needed
-                    if rec_sr != msr_sr:
-                        if HAVE_LIBROSA:
-                            recorded = librosa.resample(recorded, orig_sr=rec_sr, target_sr=msr_sr)
-                        else:
-                            st.warning(f"Mic sr={rec_sr} ≠ measurement sr={msr_sr}. Using linear resampler.")
-                            recorded = resample_linear(recorded, rec_sr, msr_sr)
+    if st.button("🎧 Use this IR for processing (overrides preset/custom)"):
+        st.session_state["override_ir_bytes"] = buf_ir.getvalue()
+        st.session_state.pop("full_original_buf", None)
+        st.session_state.pop("full_processed_buf", None)
+        st.toast("Measured IR will be used for new processing runs.", icon="✅")
 
-                    # Keep at least sweep + tail samples if the user under-recorded
-                    min_len = int((msr_T + msr_tail) * msr_sr)
-                    if len(recorded) < min_len:
-                        st.warning("Captured duration is shorter than sweep+tail; results may be noisy.")
-
-                    # Deconvolve and trim
-                    ir_est = deconvolve_ir(recorded.astype(np.float32), sweep.astype(np.float32), msr_sr)
-                    ir_est = ir_est[: int(ir_keep_s * msr_sr)]
-                    st.session_state["measured_ir"] = ir_est.astype(np.float32)
-
-        # If we have a measured IR, preview & allow using it
-        if "measured_ir" in st.session_state:
-            st.success("Measured IR ready.")
-            ir_est = st.session_state["measured_ir"]
-            buf_ir = to_wav_buffer(ir_est, msr_sr)
-            st.audio(buf_ir, format="audio/wav")
-            st.download_button("⬇️ Download measured IR (WAV)", data=buf_ir, file_name="measured_ir.wav", mime="audio/wav")
-
-            if st.button("🎧 Use this IR for processing (overrides preset/custom)"):
-                st.session_state["override_ir_bytes"] = buf_ir.getvalue()
-                # Clear old full-length renders safely (avoid None BytesIO errors)
-                st.session_state.pop("full_original_buf", None)
-                st.session_state.pop("full_processed_buf", None)
-                st.toast("Measured IR will be used for new processing runs.", icon="✅")
