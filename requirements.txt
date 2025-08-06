@@ -6,3 +6,6 @@ matplotlib
 librosa
 streamlit-webrtc
 av
+numba
+tqdm
+scikit-learn
